@@ -1,31 +1,64 @@
-export function parseDiff(diff: string) {
+export interface ParsedFile {
+  file: string;
+  added: string[];
+  removed: string[];
+}
+
+export function parseDiff(diff: string): ParsedFile[] {
+
   const lines = diff.split("\n");
 
-  const files: any[] = [];
+  const files: ParsedFile[] = [];
 
-  let currentFile: any = null;
+  let currentFile: ParsedFile | null = null;
 
   for (const line of lines) {
 
+    // New file
     if (line.startsWith("diff --git")) {
 
-      const fileName = line.split(" ")[2].replace("a/", "");
+      const match = line.match(/a\/(.+?)\s/);
 
-      currentFile = {
-        file: fileName,
-        added: [],
-        removed: []
-      };
+      if (match) {
 
-      files.push(currentFile);
+        currentFile = {
+          file: match[1],
+          added: [],
+          removed: []
+        };
+
+        files.push(currentFile);
+      }
     }
 
-    else if (line.startsWith("+") && !line.startsWith("+++")) {
-      currentFile?.added.push(line.slice(1));
+    // Ignore metadata
+    if (
+      line.startsWith("+++") ||
+      line.startsWith("---") ||
+      line.startsWith("@@") ||
+      line.startsWith("index")
+    ) {
+      continue;
     }
 
-    else if (line.startsWith("-") && !line.startsWith("---")) {
-      currentFile?.removed.push(line.slice(1));
+    // Added lines
+    if (
+      line.startsWith("+") &&
+      !line.startsWith("+++")
+    ) {
+      currentFile?.added.push(
+        line.slice(1)
+      );
+    }
+
+    // Removed lines
+    else if (
+      line.startsWith("-") &&
+      !line.startsWith("---")
+    ) {
+      currentFile?.removed.push(
+        line.slice(1)
+      );
     }
   }
 
