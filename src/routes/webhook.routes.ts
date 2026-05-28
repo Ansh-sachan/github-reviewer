@@ -1,68 +1,208 @@
 import { Router } from "express";
+import parse from "parse-diff";
+
 import { reviewCode } from "../ai/review.js";
-import {parseDiff }from "../parser/parser.js";
+import { getPullRequestFiles } from "../github/github.service.js";
 
 const router = Router();
 
-let diff = `
+/**
+ * Convert parsed diff into AI-friendly format
+ */
+function formatDiffForAI(parsedFiles: any[]) {
+
+  return parsedFiles.map((file) => {
+
+    const chunks = file.chunks || [];
+
+    const changes: string[] = [];
+
+    for (const chunk of chunks) {
+
+      for (const change of chunk.changes) {
+
+        if (change.add) {
+          changes.push(`ADDED: ${change.content}`);
+        }
+
+        else if (change.del) {
+          changes.push(`REMOVED: ${change.content}`);
+        }
+      }
+    }
+
+    return `
+====================================
+FILE: ${file.to || file.from}
+====================================
+
+${changes.join("\n")}
+`;
+  }).join("\n");
+}
+
+/**
+ * Test route
+ */
+router.post("/", async (req, res) => {
+
+  try {
+
+    const diff = `
 diff --git a/src/controllers/auth.controller.ts b/src/controllers/auth.controller.ts
 index 123abc..456def 100644
 --- a/src/controllers/auth.controller.ts
 +++ b/src/controllers/auth.controller.ts
 @@ -1,18 +1,29 @@
- import User from "../models/user.model";
-+import jwt from "jsonwebtoken";
 
- export const loginUser = async (req, res) => {
-   try {
-     const { email, password } = req.body;
+-const isMatch = await user.comparePassword(password);
++const isMatch = password === user.password;
 
-     const user = await User.findOne({ email });
-
-     if (!user) {
-       return res.status(404).json({
-         message: "User not found"
-       });
-     }
-
--    const isMatch = await user.comparePassword(password);
-+    const isMatch = password === user.password;
-
-     if (!isMatch) {
-       return res.status(401).json({
-         message: "Invalid credentials"
-       });
-     }
-
-+    const token = jwt.sign(
-+      {
-+        id: user._id,
-+        email: user.email
-+      },
-+      "secret123"
-+    );
-+
-     return res.status(200).json({
-+      token,
-       user
-     });
-
-   } catch (error) {
-+    console.log(error);
-     return res.status(500).json({
-       message: "Server error"
-     });
++const token = jwt.sign(
++ {
++   id: user._id,
++   email: user.email
++ },
++ "secret123"
++);
 `;
-router.post("/", async (req, res) => {
-  const parsedDiff = parseDiff(diff);
-  const finalDiff = JSON.stringify(parsedDiff, null, 2);
 
-  const review = await reviewCode(finalDiff);
+    const parsed = parse(diff);
 
-  res.json({
-    review,
-  });
+    const formattedDiff =
+      formatDiffForAI(parsed);
 
+    console.log(formattedDiff);
+
+    const review =
+      await reviewCode(formattedDiff);
+
+    res.json({
+      formattedDiff,
+      review
+    });
+
+  } catch (error) {
+
+    console.error(error);
+
+    res.status(500).json({
+      message: "Review failed"
+    });
+  }
 });
+
+/**
+ * Real GitHub PR review route
+ */
+router.get(
+  "/pull-request-files",
+  async (req, res) => {
+
+    try {
+
+      const githubFiles =
+        await getPullRequestFiles(
+          "facebook",
+          "react",
+          36557
+        );
+
+      /**
+       * Filter reviewable files
+       */
+      const reviewableFiles =
+        githubFiles.filter(file =>
+
+          file.patch &&
+
+          !file.filename.includes(
+            "package-lock"
+          ) &&
+
+          !file.filename.includes(
+            ".min."
+          ) &&
+
+          file.status !== "removed"
+        );
+
+      const reviews = [];
+
+      /**
+       * Review files one by one
+       */
+      for (const file of reviewableFiles) {
+
+        try {
+
+          const rawPatch =
+            file.patch;
+
+          /**
+           * Parse patch
+           */
+          const parsedPatch =
+            parse(rawPatch);
+
+          /**
+           * Convert to AI-friendly format
+           */
+          const formattedDiff =
+            formatDiffForAI(
+              parsedPatch
+            );
+
+          console.log(
+            `\n Reviewing: ${file.filename}`
+          );
+
+          /**
+           * Send to LLM
+           */
+          const review =
+            await reviewCode(
+              file.filename,
+              formattedDiff
+            );
+
+          reviews.push({
+            file: file.filename,
+            review
+          });
+
+        } catch (fileError) {
+
+          console.error(
+            `Error reviewing ${file.filename}`,
+            fileError
+          );
+
+          reviews.push({
+            file: file.filename,
+            error: "Review failed"
+          });
+        }
+      }
+
+      res.json({
+        totalFiles: reviewableFiles.length,
+        reviews
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Error fetching pull request files:",
+        error
+      );
+
+      res.status(500).json({
+        message:
+          "Error fetching pull request files"
+      });
+    }
+  }
+);
 
 export default router;
